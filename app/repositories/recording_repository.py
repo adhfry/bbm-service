@@ -12,8 +12,8 @@ import httpx
 
 from app.config import Settings, get_settings
 from app.exceptions import BackendUnavailableError
-from app.schemas import UnitInfo
-from app.services.text_normalizer import normalize_diacritics
+from app.schemas import UnitIndex, UnitInfo
+from app.services.text_normalizer import case_fold, normalize_diacritics
 
 
 class RecordingRepository:
@@ -26,11 +26,13 @@ class RecordingRepository:
         if self._owns_client:
             await self._client.aclose()
 
-    async def fetch_active_units(self) -> dict[str, UnitInfo]:
+    async def fetch_active_units(self) -> UnitIndex:
         """
-        Mengembalikan pemetaan teks unit (dinormalisasi diakritiknya) ->
-        UnitInfo. Kalau dua rekaman punya teks yang sama setelah normalisasi,
-        yang terakhir dari backend (biasanya paling baru) yang dipakai.
+        Membangun DUA peta dari daftar unit aktif -- lihat UnitIndex dan
+        text_normalizer.py untuk kenapa keduanya harus terpisah (korpus
+        legacy punya 317 pasang/kelompok unit yang HANYA berbeda diakritik/
+        glotal, mis. "a" vs "a'" vs "â" -- itu tiga rekaman berbeda, bukan
+        duplikat, jadi tidak boleh saling menimpa lewat kunci ternormalisasi).
         """
         url = f"{self._settings.backend_base_url}/api/v2/tts/units"
         headers = {"X-Internal-Token": self._settings.backend_internal_token}
@@ -46,12 +48,16 @@ class RecordingRepository:
         payload = response.json()
         rows = payload.get("data", [])
 
-        units: dict[str, UnitInfo] = {}
+        index = UnitIndex()
         for row in rows:
-            key = normalize_diacritics(str(row["text"]))
-            units[key] = UnitInfo(text=row["text"], type=row["type"], audio_url=row["audio_url"])
+            info = UnitInfo(text=row["text"], type=row["type"], audio_url=row["audio_url"])
+            index.exact[case_fold(str(row["text"]))] = info
+            # first-wins untuk peta fallback: kalau beberapa unit bertabrakan
+            # setelah dinormalisasi, yang lebih dulu di korpus yang dipakai --
+            # ini cuma best-effort fallback, bukan sumber kebenaran utama.
+            index.normalized.setdefault(normalize_diacritics(str(row["text"])), info)
 
-        return units
+        return index
 
     async def fetch_audio_bytes(self, audio_url: str) -> bytes:
         try:

@@ -1,4 +1,10 @@
-from app.services.text_normalizer import normalize_diacritics, tokenize_words
+from app.services.text_normalizer import case_fold, normalize_diacritics, tokenize_words
+
+
+def test_case_fold_preserves_diacritics_and_glottal_apostrophe():
+    assert case_fold("Â") == "â"
+    assert case_fold("A'") == "a'"
+    assert case_fold("Bhâ'") == "bhâ'"
 
 
 def test_normalizes_madura_diacritics():

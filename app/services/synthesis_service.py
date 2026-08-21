@@ -17,7 +17,7 @@ from app.config import Settings
 from app.exceptions import EmptyTextError
 from app.repositories.recording_repository import RecordingRepository
 from app.services import audio_composer
-from app.services.text_normalizer import normalize_diacritics
+from app.services.text_normalizer import case_fold
 from app.services.unit_selector import select_units
 
 
@@ -40,16 +40,21 @@ class SynthesisService:
         self._cache = cache
 
     async def synthesize(self, raw_text: str) -> SynthesisResult:
-        normalized = normalize_diacritics(raw_text.strip())
-        if not normalized:
+        # Kunci cache HARUS dari teks case-folded APA ADANYA (diakritik/glotal
+        # dipertahankan), bukan hasil normalize_diacritics() -- kalau tidak,
+        # "dateng" (tanpa diakritik) dan "dâteng" (dengan diakritik) akan
+        # berbagi slot cache yang sama padahal unit yang dipilih untuk
+        # keduanya bisa berbeda (lihat unit_selector.py).
+        text_key = case_fold(raw_text.strip())
+        if not text_key:
             raise EmptyTextError("Teks tidak boleh kosong.")
 
-        cached_audio = self._cache.get(normalized)
+        cached_audio = self._cache.get(text_key)
         if cached_audio is not None:
             return SynthesisResult(audio_bytes=cached_audio, cached=True, segments_used=[])
 
-        available_units = await self._repository.fetch_active_units()
-        plan = select_units(normalized, available_units)
+        unit_index = await self._repository.fetch_active_units()
+        plan = select_units(text_key, unit_index)
 
         segments = []
         for item in plan.items:
@@ -63,6 +68,6 @@ class SynthesisService:
         )
         result_bytes = audio_composer.export_wav(composed)
 
-        self._cache.set(normalized, result_bytes)
+        self._cache.set(text_key, result_bytes)
 
         return SynthesisResult(audio_bytes=result_bytes, cached=False, segments_used=plan.segments_used)

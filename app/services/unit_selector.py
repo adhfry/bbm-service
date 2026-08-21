@@ -9,6 +9,13 @@ dalam teks, coba urutan prioritas berikut sebelum menyerah --
        yang diam-diam bolong, karena itu lebih menyesatkan daripada error
        yang jelas.
 
+PENTING: di tiap tingkat, pencarian dulu dicoba dengan teks PERSIS (cuma
+case-folded, diakritik/glotal dipertahankan) sebelum jatuh ke normalisasi
+diakritik sebagai fallback -- lihat UnitIndex.lookup() dan text_normalizer.py.
+Ini krusial untuk audio: "a", "a'", dan "â" adalah TIGA rekaman yang
+berbeda secara fonetis, bukan variasi ejaan kata yang sama seperti pada
+pencarian kamus/terjemahan berbasis teks.
+
 Modul ini murni logika seleksi (tidak menyentuh jaringan/audio sama sekali)
 supaya gampang diuji lewat kombinasi unit yang tersedia/tidak tersedia --
 lihat tests/test_unit_selector.py.
@@ -17,20 +24,13 @@ lihat tests/test_unit_selector.py.
 from __future__ import annotations
 
 from app.exceptions import MissingAudioUnitsError
-from app.schemas import PlanItem, SynthesisPlan, UnitInfo
+from app.schemas import PlanItem, SynthesisPlan, UnitIndex
 from app.services.syllable_splitter import split_syllables_list
-from app.services.text_normalizer import normalize_diacritics, tokenize_words
+from app.services.text_normalizer import case_fold, tokenize_words
 
 
-def select_units(text: str, available: dict[str, UnitInfo]) -> SynthesisPlan:
-    """
-    `available` adalah pemetaan teks unit (sudah dinormalisasi diakritiknya,
-    lihat recording_repository.py) -> UnitInfo. `text` idealnya juga sudah
-    dinormalisasi oleh pemanggil, tapi dinormalisasi ulang di sini supaya
-    fungsi ini tetap aman dipanggil sendiri (mis. dari test).
-    """
-    normalized = normalize_diacritics(text)
-    tokens = tokenize_words(normalized)
+def select_units(text: str, index: UnitIndex) -> SynthesisPlan:
+    tokens = tokenize_words(case_fold(text))
 
     if not tokens:
         return SynthesisPlan(items=[])
@@ -39,7 +39,7 @@ def select_units(text: str, available: dict[str, UnitInfo]) -> SynthesisPlan:
     missing_segments: list[str] = []
 
     for token in tokens:
-        token_items, token_missing = _resolve_token(token, available)
+        token_items, token_missing = _resolve_token(token, index)
         if token_missing:
             missing_segments.extend(token_missing)
         else:
@@ -51,23 +51,27 @@ def select_units(text: str, available: dict[str, UnitInfo]) -> SynthesisPlan:
     return SynthesisPlan(items=plan_items)
 
 
-def _resolve_token(token: str, available: dict[str, UnitInfo]) -> tuple[list[PlanItem], list[str]]:
-    # 1. Exact match untuk seluruh kata.
-    if token in available:
-        return [PlanItem(segment=token, audio_url=available[token].audio_url)], []
+def _resolve_token(token: str, index: UnitIndex) -> tuple[list[PlanItem], list[str]]:
+    # 1. Exact match untuk seluruh kata (persis dulu, baru fallback ternormalisasi).
+    unit = index.lookup(token)
+    if unit is not None:
+        return [PlanItem(segment=token, audio_url=unit.audio_url)], []
 
     # 2 & 3. Per suku kata, dengan fallback ke huruf kalau satu suku kata
-    # tertentu belum ada rekamannya sendiri.
+    # tertentu belum ada rekamannya sendiri. Dipecah dari teks ASLI (bukan
+    # yang sudah dinormalisasi diakritiknya) supaya FSA tetap mengenali
+    # â/è sebagai vokal yang benar.
     syllables = split_syllables_list(token)
     items: list[PlanItem] = []
     missing: list[str] = []
 
     for syllable in syllables:
-        if syllable in available:
-            items.append(PlanItem(segment=syllable, audio_url=available[syllable].audio_url))
+        syllable_unit = index.lookup(syllable)
+        if syllable_unit is not None:
+            items.append(PlanItem(segment=syllable, audio_url=syllable_unit.audio_url))
             continue
 
-        letter_items, letters_missing = _resolve_letters(syllable, available)
+        letter_items, letters_missing = _resolve_letters(syllable, index)
         if letters_missing:
             missing.append(syllable)
         else:
@@ -76,10 +80,11 @@ def _resolve_token(token: str, available: dict[str, UnitInfo]) -> tuple[list[Pla
     return items, missing
 
 
-def _resolve_letters(syllable: str, available: dict[str, UnitInfo]) -> tuple[list[PlanItem], list[str]]:
+def _resolve_letters(syllable: str, index: UnitIndex) -> tuple[list[PlanItem], list[str]]:
     items: list[PlanItem] = []
     for letter in syllable:
-        if letter not in available:
+        unit = index.lookup(letter)
+        if unit is None:
             return [], [letter]
-        items.append(PlanItem(segment=letter, audio_url=available[letter].audio_url))
+        items.append(PlanItem(segment=letter, audio_url=unit.audio_url))
     return items, []

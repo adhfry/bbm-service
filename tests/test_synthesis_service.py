@@ -3,9 +3,10 @@ from pydub.generators import Sine
 
 from app.config import Settings
 from app.exceptions import BackendUnavailableError, EmptyTextError, MissingAudioUnitsError
-from app.schemas import UnitInfo
+from app.schemas import UnitIndex, UnitInfo
 from app.services import audio_composer
 from app.services.synthesis_service import SynthesisService
+from app.services.text_normalizer import case_fold, normalize_diacritics
 
 
 def _tone_wav_bytes(duration_ms: int = 150) -> bytes:
@@ -13,19 +14,28 @@ def _tone_wav_bytes(duration_ms: int = 150) -> bytes:
     return audio_composer.export_wav(segment)
 
 
+def _index(*texts: str) -> UnitIndex:
+    index = UnitIndex()
+    for text in texts:
+        info = UnitInfo(text=text, type="suku_kata", audio_url=f"https://x/{text}.wav")
+        index.exact[case_fold(text)] = info
+        index.normalized.setdefault(normalize_diacritics(text), info)
+    return index
+
+
 class FakeRepository:
     """Test double -- tidak melakukan HTTP sungguhan sama sekali."""
 
-    def __init__(self, units: dict[str, UnitInfo], should_fail: bool = False):
-        self._units = units
+    def __init__(self, index: UnitIndex, should_fail: bool = False):
+        self._index = index
         self._should_fail = should_fail
         self.fetch_calls = 0
 
-    async def fetch_active_units(self) -> dict[str, UnitInfo]:
+    async def fetch_active_units(self) -> UnitIndex:
         if self._should_fail:
             raise BackendUnavailableError("simulated outage")
         self.fetch_calls += 1
-        return self._units
+        return self._index
 
     async def fetch_audio_bytes(self, audio_url: str) -> bytes:
         return _tone_wav_bytes()
@@ -48,7 +58,7 @@ def settings() -> Settings:
 
 
 async def test_synthesize_empty_text_raises_before_touching_repository(settings):
-    repo = FakeRepository({})
+    repo = FakeRepository(UnitIndex())
     service = SynthesisService(settings, repo, FakeCache())
 
     with pytest.raises(EmptyTextError):
@@ -58,8 +68,7 @@ async def test_synthesize_empty_text_raises_before_touching_repository(settings)
 
 
 async def test_synthesize_success_produces_wav_and_populates_cache(settings):
-    units = {"sa": UnitInfo(text="sa", type="suku_kata", audio_url="https://x/sa.wav")}
-    repo = FakeRepository(units)
+    repo = FakeRepository(_index("sa"))
     cache = FakeCache()
     service = SynthesisService(settings, repo, cache)
 
@@ -72,8 +81,7 @@ async def test_synthesize_success_produces_wav_and_populates_cache(settings):
 
 
 async def test_synthesize_returns_cached_audio_without_calling_repository(settings):
-    units = {"sa": UnitInfo(text="sa", type="suku_kata", audio_url="https://x/sa.wav")}
-    repo = FakeRepository(units)
+    repo = FakeRepository(_index("sa"))
     cache = FakeCache()
     service = SynthesisService(settings, repo, cache)
 
@@ -86,8 +94,22 @@ async def test_synthesize_returns_cached_audio_without_calling_repository(settin
     assert repo.fetch_calls == calls_after_first  # tidak ada panggilan tambahan
 
 
+async def test_synthesize_distinguishes_diacritic_variants_in_cache(settings):
+    # "da" dan "dâ" adalah dua unit BERBEDA (lihat unit_selector) -- keduanya
+    # tidak boleh berbagi slot cache yang sama walau sama-sama "menormalisasi"
+    # ke teks yang sama.
+    repo = FakeRepository(_index("da", "dâ"))
+    cache = FakeCache()
+    service = SynthesisService(settings, repo, cache)
+
+    await service.synthesize("da")
+    await service.synthesize("dâ")
+
+    assert len(cache.store) == 2
+
+
 async def test_synthesize_missing_unit_propagates_domain_error(settings):
-    repo = FakeRepository({})  # tidak ada unit sama sekali
+    repo = FakeRepository(UnitIndex())  # tidak ada unit sama sekali
     service = SynthesisService(settings, repo, FakeCache())
 
     with pytest.raises(MissingAudioUnitsError):
@@ -95,7 +117,7 @@ async def test_synthesize_missing_unit_propagates_domain_error(settings):
 
 
 async def test_synthesize_backend_outage_propagates_domain_error(settings):
-    repo = FakeRepository({}, should_fail=True)
+    repo = FakeRepository(UnitIndex(), should_fail=True)
     service = SynthesisService(settings, repo, FakeCache())
 
     with pytest.raises(BackendUnavailableError):
