@@ -1,0 +1,16 @@
+.venv/
+venv/
+__pycache__/
+*.pyc
+.env
+.pytest_cache/
+*.egg-info/
+dist/
+build/
+
+# Audio & dataset artifacts -- ini akan besar dan sumbernya bukan kode,
+# jangan ikut ter-commit ke git (nanti disimpan di MinIO/object storage).
+audio/
+dataset/
+*.wav
+*.mp3
