@@ -28,3 +28,16 @@ class TtsCache:
 
     def set(self, normalized_text: str, audio_bytes: bytes) -> None:
         self._path_for(normalized_text).write_bytes(audio_bytes)
+
+    def clear(self) -> int:
+        """Hapus semua entri cache. Dipanggil backend tiap kali korpus
+        tts_recordings berubah (rekam/ganti/hapus/toggle aktif) -- tanpa ini,
+        kata yang sudah pernah disintesis akan terus memutar audio LAMA
+        selamanya walau baris/audio di database sudah diperbaiki, karena
+        cache ini tidak punya TTL dan hanya dikunci dari teks, bukan dari isi
+        korpus."""
+        removed = 0
+        for path in self._dir.glob("*.wav"):
+            path.unlink(missing_ok=True)
+            removed += 1
+        return removed

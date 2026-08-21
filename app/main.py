@@ -12,7 +12,7 @@ from app.exceptions import (
     MissingAudioUnitsError,
     TtsServiceError,
 )
-from app.routers import tts
+from app.routers import admin, tts
 
 logging.basicConfig(level=logging.INFO)
 
@@ -22,6 +22,7 @@ app = FastAPI(
     version="0.2.0",
 )
 app.include_router(tts.router)
+app.include_router(admin.router)
 
 
 @app.get("/health")
